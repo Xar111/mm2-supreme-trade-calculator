@@ -1,4 +1,4 @@
-name: Update Supreme Values
+name: Update
 
 on:
   workflow_dispatch:
