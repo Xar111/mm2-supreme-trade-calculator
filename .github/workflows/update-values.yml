@@ -38,28 +38,16 @@ jobs:
           git config user.name "MM2 Supreme Values Bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          for attempt in 1 2 3 4 5; do
-            echo "Update attempt $attempt"
+          git fetch origin main
+          git reset --mixed origin/main
+          git add data/values.json
 
-            git fetch origin main
-            git reset --mixed origin/main
-            git add data/values.json
+          if git diff --cached --quiet; then
+            echo "No changes to save."
+            exit 0
+          fi
 
-            if git diff --cached --quiet; then
-              echo "Values are already up to date."
-              exit 0
-            fi
+          git commit -m "Update Supreme Values"
+          git push origin HEAD:main
 
-            git commit -m "Update Supreme Values"
-
-            if git push origin HEAD:main; then
-              echo "Values updated successfully."
-              exit 0
-            fi
-
-            echo "Push failed; retrying with the latest repository."
-          done
-
-          echo "Failed after 5 attempts."
-          exit 1
 # Fresh workflow version
