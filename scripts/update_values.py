@@ -9,73 +9,34 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.supremevalues.com/mm2/"
 CATEGORIES = [
-    "sets",
-    "uniques",
-    "evos",
-    "ancients",
-    "vintages",
-    "chromas",
-    "godlies",
-    "legendaries",
-    "rares",
-    "uncommons",
-    "commons",
-    "pets",
-    "misc",
-    "untradables",
+    "sets", "uniques", "evos", "ancients", "vintages",
+    "chromas", "godlies", "legendaries", "rares",
+    "uncommons", "commons", "pets", "misc", "untradables"
 ]
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 10) "
-        "AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36"
-    )
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
 }
 
 
 def clean(value):
-    return re.sub(r"\s+", " ", str(value)).strip()
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def number(value):
-    if value is None:
-        return None
-
-    value = clean(value).replace(",", "")
-
-    match = re.search(r"-?\d+(?:\.\d+)?", value)
-
-    if not match:
-        return None
-
-    result = float(match.group(0))
-
-    if result.is_integer():
-        return int(result)
-
-    return result
-
-
-def get_soup(url):
+def get_page(url):
     response = requests.get(
         url,
         headers=HEADERS,
         timeout=30
     )
-
     response.raise_for_status()
-
-    return BeautifulSoup(
-        response.text,
-        "html.parser"
-    )
+    return BeautifulSoup(response.text, "html.parser")
 
 
-def extract_label(text, label):
-    pattern = rf"{re.escape(label)}\s*[-:]\s*(.*?)(?=\s+(?:Value|Range|Stability|Demand|Rarity|Origin|Change in Value|Aliases|Flippability|Chance of Rising)\s*[-:]|$)"
-
+def get_value(text):
     match = re.search(
-        pattern,
+        r"\bValue\s*[-:]\s*([0-9][0-9,.]*)",
         text,
         re.IGNORECASE
     )
@@ -83,196 +44,117 @@ def extract_label(text, label):
     if not match:
         return None
 
-    return clean(match.group(1))
+    return float(match.group(1).replace(",", ""))
 
 
-def extract_value(text):
-    match = re.search(
-        r"\bValue\s*[-:]\s*([0-9,.]+)",
-        text,
-        re.IGNORECASE
-    )
+def scrape_category(category):
+    # Try both URL formats in case Supreme changes its routes.
+    urls = [
+        BASE_URL + category,
+        BASE_URL + category + ".php"
+    ]
 
-    if not match:
-        return None
+    soup = None
 
-    return number(match.group(1))
+    for url in urls:
+        try:
+            print("Checking:", url)
+            candidate = get_page(url)
 
+            if candidate.find("img") or candidate.find("table"):
+                soup = candidate
+                break
 
-def extract_range(text):
-    match = re.search(
-        r"\bRange\s*[-:]\s*(.*?)(?=\s+(?:Stability|Demand|Rarity|Origin|Change in Value|Aliases|Flippability|Chance of Rising)\s*[-:]|$)",
-        text,
-        re.IGNORECASE
-    )
+        except Exception as error:
+            print("Page failed:", error)
 
-    if not match:
-        return None
-
-    value = clean(match.group(1))
-
-    if value.lower() in ("n/a", "na", "none"):
-        return None
-
-    numbers = re.findall(
-        r"[0-9,.]+",
-        value
-    )
-
-    if len(numbers) >= 2:
-        return {
-            "low": number(numbers[0]),
-            "high": number(numbers[1])
-        }
-
-    return {
-        "text": value
-    }
-
-
-def find_item_name(element):
-    for selector in [
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        ".item-name",
-        ".name",
-        "a"
-    ]:
-        found = element.select_one(selector)
-
-        if found:
-            name = clean(found.get_text(" ", strip=True))
-
-            if name and len(name) <= 100:
-                return name
-
-    return None
-
-
-def parse_category(category):
-    url = BASE_URL + category + ".php"
-
-    print(f"Downloading {url}")
-
-    try:
-        soup = get_soup(url)
-    except Exception as error:
-        print(f"ERROR loading {category}: {error}")
+    if soup is None:
+        print("Could not load:", category)
         return []
 
-    results = []
+    results = {}
 
-    containers = soup.select(
-        "tr, .item, .item-card, .card, article, .value-item"
-    )
+    for element in soup.find_all(["tr", "article", "div", "li"]):
+        text = clean(element.get_text(" ", strip=True))
 
-    seen = set()
-
-    for element in containers:
-        text = clean(
-            element.get_text(
-                " ",
-                strip=True
-            )
-        )
-
-        if "Value" not in text:
+        if len(text) > 2000:
             continue
 
-        value = extract_value(text)
+        value = get_value(text)
 
         if value is None:
             continue
 
-        name = find_item_name(element)
+        name = None
+
+        # Item images commonly contain the item name in their alt text.
+        for img in element.find_all("img"):
+            alt = clean(img.get("alt", ""))
+
+            if (
+                alt
+                and alt.lower() not in {
+                    "image",
+                    "supreme values",
+                    "item stability"
+                }
+                and len(alt) <= 100
+            ):
+                name = alt
+                break
+
+        # Try headings and links if no useful image name exists.
+        if not name:
+            for selector in ["h1", "h2", "h3", "h4", "a"]:
+                found = element.select_one(selector)
+
+                if found:
+                    candidate = clean(
+                        found.get_text(" ", strip=True)
+                    )
+
+                    if candidate and len(candidate) <= 100:
+                        name = candidate
+                        break
 
         if not name:
             continue
 
-        lowered = name.lower()
+        key = name.casefold()
 
-        if lowered in seen:
-            continue
-
-        seen.add(lowered)
-
-        item = {
-            "name": name,
-            "value": value,
-            "category": category
-        }
-
-        item_range = extract_range(text)
-
-        if item_range is not None:
-            item["range"] = item_range
-
-        demand = extract_label(text, "Demand")
-
-        if demand:
-            item["demand"] = demand
-
-        stability = extract_label(text, "Stability")
-
-        if stability:
-            item["stability"] = stability
-
-        rarity = extract_label(text, "Rarity")
-
-        if rarity:
-            item["rarity"] = rarity
-
-        origin = extract_label(text, "Origin")
-
-        if origin:
-            item["origin"] = origin
-
-        change = extract_label(
-            text,
-            "Change in Value"
+        results.setdefault(
+            key,
+            {
+                "name": name,
+                "value": int(value) if value.is_integer() else value,
+                "category": category
+            }
         )
 
-        if change:
-            item["change"] = change
-
-        aliases = extract_label(
-            text,
-            "Aliases"
-        )
-
-        if aliases:
-            item["aliases"] = aliases
-
-        results.append(item)
-
-    print(
-        f"{category}: {len(results)} items found"
-    )
-
-    return results
+    print(f"{category}: {len(results)} items")
+    return list(results.values())
 
 
 def main():
-    all_items = {}
+    items = {}
 
     for category in CATEGORIES:
         try:
-            items = parse_category(category)
-
-            for item in items:
-                key = item["name"].strip().lower()
-
-                if key not in all_items:
-                    all_items[key] = item
-
+            for item in scrape_category(category):
+                items.setdefault(
+                    item["name"].casefold(),
+                    item
+                )
         except Exception as error:
-            print(
-                f"ERROR processing {category}: {error}"
-            )
+            print("Category error:", category, error)
 
         time.sleep(1)
+
+    # Never replace the data file with an empty result.
+    if not items:
+        raise RuntimeError(
+            "ZERO ITEMS FOUND. Existing values.json was not overwritten."
+        )
 
     output = {
         "source": "Supreme Values",
@@ -280,18 +162,14 @@ def main():
         "updated_at": datetime.now(
             timezone.utc
         ).isoformat(),
-        "item_count": len(all_items),
+        "item_count": len(items),
         "items": sorted(
-            all_items.values(),
-            key=lambda item:
-                item["name"].lower()
+            items.values(),
+            key=lambda item: item["name"].casefold()
         )
     }
 
-    os.makedirs(
-        "data",
-        exist_ok=True
-    )
+    os.makedirs("data", exist_ok=True)
 
     with open(
         "data/values.json",
@@ -305,13 +183,7 @@ def main():
             ensure_ascii=False
         )
 
-    print()
-    print(
-        f"TOTAL ITEMS SAVED: {len(all_items)}"
-    )
-    print(
-        "Created: data/values.json"
-    )
+    print("TOTAL ITEMS SAVED:", len(items))
 
 
 if __name__ == "__main__":
